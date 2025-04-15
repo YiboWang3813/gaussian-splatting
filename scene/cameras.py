@@ -24,8 +24,8 @@ class Camera(nn.Module):
                  ):
         super(Camera, self).__init__()
 
-        self.uid = uid
-        self.colmap_id = colmap_id
+        self.uid = uid # 表示相机 防止重叠 
+        self.colmap_id = colmap_id # 相机位姿的id 
         self.R = R
         self.T = T
         self.FoVx = FoVx
@@ -78,15 +78,16 @@ class Camera(nn.Module):
             self.invdepthmap = torch.from_numpy(self.invdepthmap[None]).to(self.data_device)
 
         self.zfar = 100.0
-        self.znear = 0.01
+        self.znear = 0.01 # 相机的近平面和远平面 
 
         self.trans = trans
-        self.scale = scale
+        self.scale = scale # 平移和缩放的转换 
 
         self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
         self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
-        self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
-        self.camera_center = self.world_view_transform.inverse()[3, :3]
+        # 组合 得到世界坐标系到NDC坐标系的变换矩阵 
+        self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0) 
+        self.camera_center = self.world_view_transform.inverse()[3, :3] # 相机光心 
         
 class MiniCam:
     def __init__(self, width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform):

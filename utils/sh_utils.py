@@ -61,8 +61,8 @@ def eval_sh(deg, sh, dirs):
     Works with torch/np/jnp.
     ... Can be 0 or more batch dimensions.
     Args:
-        deg: int SH deg. Currently, 0-3 supported
-        sh: jnp.ndarray SH coeffs [..., C, (deg + 1) ** 2]
+        deg: int SH deg. Currently, 0-3 supported 阶数 
+        sh: jnp.ndarray SH coeffs [..., C, (deg + 1) ** 2] 球谐函数的系数 
         dirs: jnp.ndarray unit directions [..., 3]
     Returns:
         [..., C]
@@ -112,7 +112,7 @@ def eval_sh(deg, sh, dirs):
     return result
 
 def RGB2SH(rgb):
-    return (rgb - 0.5) / C0
+    return (rgb - 0.5) / C0 # rgb范围0~1 
 
 def SH2RGB(sh):
     return sh * C0 + 0.5

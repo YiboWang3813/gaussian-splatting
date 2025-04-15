@@ -73,19 +73,19 @@ def strip_lowerdiag(L):
     return uncertainty
 
 def strip_symmetric(sym):
-    return strip_lowerdiag(sym)
+    return strip_lowerdiag(sym) # 只保留cov中主对角线的右上角 不重复的元素 
 
 def build_rotation(r):
-    norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3])
+    norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3]) # 求r的模
 
-    q = r / norm[:, None]
+    q = r / norm[:, None] # 对r归一化 之后r为单位四元数 (N, 4)
 
-    R = torch.zeros((q.size(0), 3, 3), device='cuda')
+    R = torch.zeros((q.size(0), 3, 3), device='cuda') # 构建R (N, 3, 3) 
 
     r = q[:, 0]
     x = q[:, 1]
     y = q[:, 2]
-    z = q[:, 3]
+    z = q[:, 3] # 提取四元数 (N,)
 
     R[:, 0, 0] = 1 - 2 * (y*y + z*z)
     R[:, 0, 1] = 2 * (x*y - r*z)
@@ -95,18 +95,18 @@ def build_rotation(r):
     R[:, 1, 2] = 2 * (y*z - r*x)
     R[:, 2, 0] = 2 * (x*z - r*y)
     R[:, 2, 1] = 2 * (y*z + r*x)
-    R[:, 2, 2] = 1 - 2 * (x*x + y*y)
+    R[:, 2, 2] = 1 - 2 * (x*x + y*y) # 四元数转旋转矩阵 
     return R
 
 def build_scaling_rotation(s, r):
-    L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
-    R = build_rotation(r)
+    L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda") # 构建L (N, 3, 3) 
+    R = build_rotation(r) # 构建R (N, 3, 3) 
 
     L[:,0,0] = s[:,0]
     L[:,1,1] = s[:,1]
-    L[:,2,2] = s[:,2]
+    L[:,2,2] = s[:,2] # s转L 填到对角线上
 
-    L = R @ L
+    L = R @ L # 高斯矩阵的变化 
     return L
 
 def safe_state(silent):

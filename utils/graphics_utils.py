@@ -36,6 +36,7 @@ def getWorld2View(R, t):
     return np.float32(Rt)
 
 def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
+    # 由世界坐标系到相机坐标系  旋转矩阵 平移矩阵 转换数组 缩放因子 
     Rt = np.zeros((4, 4))
     Rt[:3, :3] = R.transpose()
     Rt[:3, 3] = t
@@ -43,12 +44,13 @@ def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
 
     C2W = np.linalg.inv(Rt)
     cam_center = C2W[:3, 3]
-    cam_center = (cam_center + translate) * scale
+    cam_center = (cam_center + translate) * scale # 调整相机中心 
     C2W[:3, 3] = cam_center
     Rt = np.linalg.inv(C2W)
     return np.float32(Rt)
 
 def getProjectionMatrix(znear, zfar, fovX, fovY):
+    # 相机坐标系转NDC坐标系 
     tanHalfFovY = math.tan((fovY / 2))
     tanHalfFovX = math.tan((fovX / 2))
 
