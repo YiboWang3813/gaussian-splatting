@@ -95,10 +95,18 @@ def build_rotation(r):
     R[:, 1, 2] = 2 * (y*z - r*x)
     R[:, 2, 0] = 2 * (x*z - r*y)
     R[:, 2, 1] = 2 * (y*z + r*x)
-    R[:, 2, 2] = 1 - 2 * (x*x + y*y) # 四元数转旋转矩阵 
+    R[:, 2, 2] = 1 - 2 * (x*x + y*y) # 四元数转3x3矩阵 
     return R
 
 def build_scaling_rotation(s, r):
+    """ 
+    构建旋转缩放矩阵
+    Parameters:
+        s (torch.Tensor): 缩放矩阵 (N, 3) 每一行是一个高斯椭球的缩放因子 [s1, s2, s3]
+        r (torch.Tensor): 旋转四元数矩阵 (N, 4) 每一行是一个高斯椭球的旋转四元数 [r, x, y, z]
+    Returns:
+        L (torch.Tensor): 先缩放后旋转的变换矩阵 (N, 3, 3)
+    """
     L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda") # 构建L (N, 3, 3) 
     R = build_rotation(r) # 构建R (N, 3, 3) 
 
