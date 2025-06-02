@@ -24,13 +24,13 @@ class Camera(nn.Module):
                  ):
         super(Camera, self).__init__()
 
-        self.uid = uid # 表示相机 防止重叠 
+        self.uid = uid # 相机标识符 防止重叠 
         self.colmap_id = colmap_id # 相机位姿的id 
-        self.R = R
-        self.T = T
-        self.FoVx = FoVx
-        self.FoVy = FoVy
-        self.image_name = image_name
+        self.R = R # 旋转矩阵 
+        self.T = T # 平移矩阵
+        self.FoVx = FoVx # 相机在水平方向的视场角 
+        self.FoVy = FoVy # 相机在垂直方向的视场角
+        self.image_name = image_name # 图像名字 
 
         try:
             self.data_device = torch.device(data_device)
@@ -40,10 +40,10 @@ class Camera(nn.Module):
             self.data_device = torch.device("cuda")
 
         resized_image_rgb = PILtoTorch(image, resolution)
-        gt_image = resized_image_rgb[:3, ...]
+        gt_image = resized_image_rgb[:3, ...] # (3, H, W) 
         self.alpha_mask = None
         if resized_image_rgb.shape[0] == 4:
-            self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device)
+            self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device) # (1, H, W) 
         else: 
             self.alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...].to(self.data_device))
 
@@ -83,9 +83,10 @@ class Camera(nn.Module):
         self.trans = trans
         self.scale = scale # 平移和缩放的转换 
 
+        # 这里视角变换和投影变换中的.transpose(0, 1)是因为在torch中矩阵的存储方式是行优先的，而在OpenGL中是列优先的 
         self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
         self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
-        # 组合 得到世界坐标系到NDC坐标系的变换矩阵 
+        # 在转置成opengl的风格以后，矩阵的相乘顺序也要相反，就和人直观的感觉一样先视角再投影
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0) 
         self.camera_center = self.world_view_transform.inverse()[3, :3] # 相机光心 
         

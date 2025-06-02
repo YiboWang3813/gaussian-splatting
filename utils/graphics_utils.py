@@ -36,13 +36,20 @@ def getWorld2View(R, t):
     return np.float32(Rt)
 
 def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
-    # 由世界坐标系到相机坐标系  旋转矩阵 平移矩阵 转换数组 缩放因子 
+    """ 获得从世界坐标系到相机坐标系的变换矩阵 
+    Args:
+        R (np.array): 旋转矩阵 (3, 3)
+        t (np.array): 平移向量 (3,)
+        translate (np.array): 平移向量的偏移 (3,), 默认是 [0.0, 0.0, 0.0]
+        scale (float): 缩放因子, 默认是1.0 
+    Returns:
+        Rt (np.array): 变换矩阵 (4, 4) """
     Rt = np.zeros((4, 4))
     Rt[:3, :3] = R.transpose()
     Rt[:3, 3] = t
     Rt[3, 3] = 1.0
 
-    C2W = np.linalg.inv(Rt)
+    C2W = np.linalg.inv(Rt) # 相机坐标系到世界坐标系的变换矩阵 即相机的内参矩阵
     cam_center = C2W[:3, 3]
     cam_center = (cam_center + translate) * scale # 调整相机中心 
     C2W[:3, 3] = cam_center
@@ -50,7 +57,14 @@ def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
     return np.float32(Rt)
 
 def getProjectionMatrix(znear, zfar, fovX, fovY):
-    # 相机坐标系转NDC坐标系 
+    """ 获得从相机坐标系到NDC坐标系的投影矩阵 
+    Args:
+        znear (float): 近平面距离
+        zfar (float): 远平面距离
+        fovX (float): 水平方向的视场角（弧度）
+        fovY (float): 垂直方向的视场角（弧度）
+    Returns:
+        P (torch.Tensor): 投影矩阵 (4, 4) """ 
     tanHalfFovY = math.tan((fovY / 2))
     tanHalfFovX = math.tan((fovX / 2))
 
