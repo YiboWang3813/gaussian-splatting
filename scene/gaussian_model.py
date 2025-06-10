@@ -393,7 +393,7 @@ class GaussianModel:
             else:
                 group["params"][0] = nn.Parameter(torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))
                 optimizable_tensors[group["name"]] = group["params"][0]
-        return optimizable_tensors
+        return optimizable_tensors # 有返回值的目的是要让它去修改self._xyz等变量 
 
     # ------------------------------ 自适应密度控制部分 ------------------------------ #
     def prune_points(self, mask):
@@ -402,7 +402,7 @@ class GaussianModel:
         valid_points_mask = ~mask # valid_mask=1 mask=0 这个点保留 valid_mask=0 mask=1 这个点删掉
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
-        self._xyz = optimizable_tensors["xyz"]
+        self._xyz = optimizable_tensors["xyz"] # 在python中 self._xyz = something 是让self._xyz这个名字指向新的对象
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
