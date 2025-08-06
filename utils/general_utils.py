@@ -61,7 +61,7 @@ def get_expon_lr_func(
 
     return helper
 
-def strip_lowerdiag(L):
+def strip_lowerdiag(L: torch.Tensor) -> torch.Tensor:
     uncertainty = torch.zeros((L.shape[0], 6), dtype=torch.float, device="cuda")
 
     uncertainty[:, 0] = L[:, 0, 0]
@@ -72,20 +72,37 @@ def strip_lowerdiag(L):
     uncertainty[:, 5] = L[:, 2, 2]
     return uncertainty
 
-def strip_symmetric(sym):
-    return strip_lowerdiag(sym) # 只保留cov中主对角线的右上角 不重复的元素 
+def strip_symmetric(sym: torch.Tensor) -> torch.Tensor:
+    """ 
+    Strip the symmetrix part of the covariance matrix 
 
-def build_rotation(r):
-    norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3]) # 求r的模
+    Args: 
+        sym: (N, 3, 3) symmetric matrix
 
-    q = r / norm[:, None] # 对r归一化 之后r为单位四元数 (N, 4)
+    Returns:
+        L: (N, 6) upper triangular (including diagonal) elements of the matrix 
+    """
+    return strip_lowerdiag(sym)  
 
-    R = torch.zeros((q.size(0), 3, 3), device='cuda') # 构建R (N, 3, 3) 
+def build_rotation(r: torch.Tensor) -> torch.Tensor:
+    """ 
+    Build rotation matrix from the quaternion. 
 
-    r = q[:, 0]
-    x = q[:, 1]
-    y = q[:, 2]
-    z = q[:, 3] # 提取四元数 (N,)
+    Args:
+        r: (N, 4) quaternion
+    
+    Returns:
+        R: (N, 3, 3) rotation matrix
+    """
+    # normalize r 
+    norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3]) 
+
+    q = r / norm[:, None] # (N, 4)
+
+    # build R (N, 3, 3)
+    R = torch.zeros((q.size(0), 3, 3), device='cuda') 
+
+    r, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
 
     R[:, 0, 0] = 1 - 2 * (y*y + z*z)
     R[:, 0, 1] = 2 * (x*y - r*z)
@@ -95,26 +112,29 @@ def build_rotation(r):
     R[:, 1, 2] = 2 * (y*z - r*x)
     R[:, 2, 0] = 2 * (x*z - r*y)
     R[:, 2, 1] = 2 * (y*z + r*x)
-    R[:, 2, 2] = 1 - 2 * (x*x + y*y) # 四元数转3x3矩阵 
+    R[:, 2, 2] = 1 - 2 * (x*x + y*y) 
     return R
 
-def build_scaling_rotation(s, r):
+def build_scaling_rotation(s: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
     """ 
-    构建旋转缩放矩阵
-    Parameters:
-        s (torch.Tensor): 缩放矩阵 (N, 3) 每一行是一个高斯椭球的缩放因子 [s1, s2, s3]
-        r (torch.Tensor): 旋转四元数矩阵 (N, 4) 每一行是一个高斯椭球的旋转四元数 [r, x, y, z]
-    Returns:
-        L (torch.Tensor): 先缩放后旋转的变换矩阵 (N, 3, 3)
-    """
-    L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda") # 构建L (N, 3, 3) 
-    R = build_rotation(r) # 构建R (N, 3, 3) 
+    Build the scaling and rotation matrix from the parameters.
 
+    Args:
+        s: (N, 3), scaling factors   
+        r: (N, 4), rotation quaternions  
+
+    Returns:
+        L: (N, 3, 3), scaling and rotation matrix
+    """
+    L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda") 
+    R = build_rotation(r) # (N, 3, 3) 
+
+    # Fill the diagonal with the scaling factors
     L[:,0,0] = s[:,0]
     L[:,1,1] = s[:,1]
-    L[:,2,2] = s[:,2] # s转L 填到对角线上
+    L[:,2,2] = s[:,2]
 
-    L = R @ L # 高斯矩阵的变化 
+    L = R @ L 
     return L
 
 def safe_state(silent):
