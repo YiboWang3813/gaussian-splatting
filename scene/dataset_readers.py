@@ -24,18 +24,18 @@ from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 
 class CameraInfo(NamedTuple):
-    uid: int
-    R: np.array
-    T: np.array
-    FovY: np.array
-    FovX: np.array
+    uid: int  # camera id 
+    R: np.array  # rotation matrix (3, 3)
+    T: np.array  # translation vector (3,)
+    FovY: np.array  # float吧 
+    FovX: np.array  # float 
     depth_params: dict
-    image_path: str
-    image_name: str
+    image_path: str  # image path 
+    image_name: str  # image name 
     depth_path: str
-    width: int
-    height: int
-    is_test: bool
+    width: int  # image width, pixel 
+    height: int  # image height, pixel 
+    is_test: bool  # is this image in the test set 
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -47,11 +47,11 @@ class SceneInfo(NamedTuple):
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
-        cam_centers = np.hstack(cam_centers)
-        avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)
-        center = avg_cam_center
-        dist = np.linalg.norm(cam_centers - center, axis=0, keepdims=True)
-        diagonal = np.max(dist)
+        cam_centers = np.hstack(cam_centers)  # (3, N)
+        avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)  # (3, 1)
+        center = avg_cam_center  # (3,)
+        dist = np.linalg.norm(cam_centers - center, axis=0, keepdims=True)  # (1, N)
+        diagonal = np.max(dist)  # float 
         return center.flatten(), diagonal
 
     cam_centers = []
@@ -61,6 +61,8 @@ def getNerfppNorm(cam_info):
         C2W = np.linalg.inv(W2C)
         cam_centers.append(C2W[:3, 3:4])
 
+    # center 所有相机中心在世界坐标系下的位置的平均值 
+    # diagonal 所有相机中心到平均位置的距离的最大值
     center, diagonal = get_center_and_diag(cam_centers)
     radius = diagonal * 1.1
 
@@ -82,18 +84,18 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         width = intr.width
 
         uid = intr.id
-        R = np.transpose(qvec2rotmat(extr.qvec))
-        T = np.array(extr.tvec)
+        R = np.transpose(qvec2rotmat(extr.qvec))  # (3, 3)
+        T = np.array(extr.tvec)  # (3,)
 
         if intr.model=="SIMPLE_PINHOLE":
             focal_length_x = intr.params[0]
             FovY = focal2fov(focal_length_x, height)
             FovX = focal2fov(focal_length_x, width)
         elif intr.model=="PINHOLE":
-            focal_length_x = intr.params[0]
-            focal_length_y = intr.params[1]
-            FovY = focal2fov(focal_length_y, height)
-            FovX = focal2fov(focal_length_x, width)
+            focal_length_x = intr.params[0]  # fx, pixel
+            focal_length_y = intr.params[1]  # fy, pixel
+            FovY = focal2fov(focal_length_y, height)  # Fov in y direction 
+            FovX = focal2fov(focal_length_x, width)  # Fov in x direction
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
@@ -118,11 +120,12 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
     return cam_infos
 
 def fetchPly(path):
+    # Read point cloud data from path 
     plydata = PlyData.read(path)
     vertices = plydata['vertex']
-    positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
-    colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
-    normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
+    positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T  # (num_points, 3)
+    colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0  # (num_points, 3)
+    normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T  # (num_points, 3)
     return BasicPointCloud(points=positions, colors=colors, normals=normals)
 
 def storePly(path, xyz, rgb):

@@ -15,7 +15,7 @@ import numpy as np
 from typing import NamedTuple
 
 class BasicPointCloud(NamedTuple):
-    points : np.array
+    points : np.array  # position 
     colors : np.array
     normals : np.array
 
@@ -36,20 +36,26 @@ def getWorld2View(R, t):
     return np.float32(Rt)
 
 def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
-    """ 获得从世界坐标系到相机坐标系的变换矩阵 
+    """ 
+    Compute the transformation matrix from world coordinates to camera view coordinates.
+
     Args:
-        R (np.array): 旋转矩阵 (3, 3)
-        t (np.array): 平移向量 (3,)
-        translate (np.array): 平移向量的偏移 (3,), 默认是 [0.0, 0.0, 0.0]
-        scale (float): 缩放因子, 默认是1.0 
+        R (np.array): Rotation matrix (3x3), 
+        拍摄图像时,相机坐标系朝向相对于世界坐标系朝向的旋转矩阵
+        t (np.array): Translation vector (3,), 
+        拍摄图像时,相机坐标系原点在世界坐标系中的位置 
+        translate (np.array): Additional translation to apply to the camera center (3,).
+        scale (float): Scaling factor for the camera center.
+
     Returns:
-        Rt (np.array): 变换矩阵 (4, 4) """
+        Rt (np.array): 4x4 transformation matrix from world to camera view coordinates.
+    """
     Rt = np.zeros((4, 4))
-    Rt[:3, :3] = R.transpose()
-    Rt[:3, 3] = t
+    Rt[:3, :3] = R.transpose()  # 世界坐标系朝向到世界坐标系朝向的旋转矩阵 调整坐标系朝向
+    Rt[:3, 3] = t  # 调整坐标系原点位置 
     Rt[3, 3] = 1.0
 
-    C2W = np.linalg.inv(Rt) # 相机坐标系到世界坐标系的变换矩阵 即相机的内参矩阵
+    C2W = np.linalg.inv(Rt) 
     cam_center = C2W[:3, 3]
     cam_center = (cam_center + translate) * scale # 调整相机中心 
     C2W[:3, 3] = cam_center

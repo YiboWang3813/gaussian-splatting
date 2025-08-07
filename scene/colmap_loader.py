@@ -34,8 +34,7 @@ CAMERA_MODELS = {
     CameraModel(model_id=9, model_name="RADIAL_FISHEYE", num_params=5),
     CameraModel(model_id=10, model_name="THIN_PRISM_FISHEYE", num_params=12)
 }
-CAMERA_MODEL_IDS = dict([(camera_model.model_id, camera_model)
-                         for camera_model in CAMERA_MODELS])
+CAMERA_MODEL_IDS = dict([(camera_model.model_id, camera_model) for camera_model in CAMERA_MODELS])
 CAMERA_MODEL_NAMES = dict([(camera_model.model_name, camera_model)
                            for camera_model in CAMERA_MODELS])
 
@@ -185,26 +184,30 @@ def read_extrinsics_binary(path_to_model_file):
     """
     images = {}
     with open(path_to_model_file, "rb") as fid:
+        # Read the number of images 
         num_reg_images = read_next_bytes(fid, 8, "Q")[0]
         for _ in range(num_reg_images):
-            binary_image_properties = read_next_bytes(
-                fid, num_bytes=64, format_char_sequence="idddddddi")
+            # Read the basic properties of this image 
+            binary_image_properties = read_next_bytes(fid, num_bytes=64, format_char_sequence="idddddddi")
+            # Unpack these properties 
             image_id = binary_image_properties[0]
-            qvec = np.array(binary_image_properties[1:5])
-            tvec = np.array(binary_image_properties[5:8])
+            qvec = np.array(binary_image_properties[1:5])  # rotation quaternion (4,)
+            tvec = np.array(binary_image_properties[5:8])  # translation vector (3,)
             camera_id = binary_image_properties[8]
+            # Read the image name 
             image_name = ""
             current_char = read_next_bytes(fid, 1, "c")[0]
             while current_char != b"\x00":   # look for the ASCII 0 entry
                 image_name += current_char.decode("utf-8")
-                current_char = read_next_bytes(fid, 1, "c")[0]
-            num_points2D = read_next_bytes(fid, num_bytes=8,
-                                           format_char_sequence="Q")[0]
-            x_y_id_s = read_next_bytes(fid, num_bytes=24*num_points2D,
-                                       format_char_sequence="ddq"*num_points2D)
+                current_char = read_next_bytes(fid, 1, "c")[0] 
+            # Read the number of keypoints in this image 
+            num_points2D = read_next_bytes(fid, num_bytes=8, format_char_sequence="Q")[0]
+            # Read the information of all keypoints 
+            x_y_id_s = read_next_bytes(fid, num_bytes=24*num_points2D, format_char_sequence="ddq"*num_points2D)
             xys = np.column_stack([tuple(map(float, x_y_id_s[0::3])),
-                                   tuple(map(float, x_y_id_s[1::3]))])
-            point3D_ids = np.array(tuple(map(int, x_y_id_s[2::3])))
+                                   tuple(map(float, x_y_id_s[1::3]))])  # 2D coordinates of all keypoints (N, 2)
+            point3D_ids = np.array(tuple(map(int, x_y_id_s[2::3])))  # 该关键点对应点云中的3D索引 没有对应为-1 (N,)
+            # Combine to an Image object
             images[image_id] = Image(
                 id=image_id, qvec=qvec, tvec=tvec,
                 camera_id=camera_id, name=image_name,
@@ -220,18 +223,20 @@ def read_intrinsics_binary(path_to_model_file):
     """
     cameras = {}
     with open(path_to_model_file, "rb") as fid:
+        # Read the number of cameras 
         num_cameras = read_next_bytes(fid, 8, "Q")[0]
         for _ in range(num_cameras):
-            camera_properties = read_next_bytes(
-                fid, num_bytes=24, format_char_sequence="iiQQ")
+            # Read the basic properties of this camera 
+            camera_properties = read_next_bytes(fid, num_bytes=24, format_char_sequence="iiQQ")
             camera_id = camera_properties[0]
             model_id = camera_properties[1]
             model_name = CAMERA_MODEL_IDS[camera_properties[1]].model_name
             width = camera_properties[2]
-            height = camera_properties[3]
+            height = camera_properties[3]  # 这台相机拍出来图像的width和height 以像素为单位
             num_params = CAMERA_MODEL_IDS[model_id].num_params
-            params = read_next_bytes(fid, num_bytes=8*num_params,
-                                     format_char_sequence="d"*num_params)
+            # Read the parameters of this camera [fx, fy, cx, cy] 以像素为单位 
+            params = read_next_bytes(fid, num_bytes=8*num_params, format_char_sequence="d"*num_params)
+            # Combine to a Camera object
             cameras[camera_id] = Camera(id=camera_id,
                                         model=model_name,
                                         width=width,

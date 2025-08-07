@@ -1,11 +1,23 @@
-import torch 
 
-x = torch.tensor(
-    [[0, 1, 2, 3],
-     [4, 5, 6, 7],
-     [8, 9, 10, 11],
-     [12, 13, 14, 15]]
-)
-y = x.T 
+from scene.colmap_loader import read_extrinsics_binary, read_intrinsics_binary 
 
-print(x, y) 
+
+path = '/raid/liujie/code_recon/data/rgb/drjohnson/sparse/0/images.bin'
+extrinsics = read_extrinsics_binary(path) 
+
+# count = 0 
+# for k, v in extrinsics.items(): 
+#     if count == 3: 
+#         break 
+#     print(k, v, v.id)
+#     count += 1 
+
+path = '/raid/liujie/code_recon/data/rgb/drjohnson/sparse/0/cameras.bin' 
+cameras = read_intrinsics_binary(path) 
+
+count = 0 
+for k, v in cameras.items(): 
+    # if count == 3: 
+    #     break 
+    print(k, v, v.id)
+    count += 1 
