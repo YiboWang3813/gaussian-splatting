@@ -52,7 +52,7 @@ def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
     """
     Rt = np.zeros((4, 4))
     Rt[:3, :3] = R.transpose()  # 世界坐标系朝向到世界坐标系朝向的旋转矩阵 调整坐标系朝向
-    Rt[:3, 3] = t  # 调整坐标系原点位置 
+    Rt[:3, 3] = t  # 这应该是 -R.T @ t 
     Rt[3, 3] = 1.0
 
     C2W = np.linalg.inv(Rt) 

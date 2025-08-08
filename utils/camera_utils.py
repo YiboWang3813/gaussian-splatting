@@ -20,6 +20,7 @@ WARNED = False
 def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dataset):
     image = Image.open(cam_info.image_path)
 
+    # Try to load the inv depth map 
     if cam_info.depth_path != "":
         try:
             if is_nerf_synthetic:
@@ -38,7 +39,8 @@ def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dat
             raise
     else:
         invdepthmap = None
-        
+    
+    # Get final image resolution based on the args.resolution, resolution_scale, and image size
     orig_w, orig_h = image.size
     if args.resolution in [1, 2, 4, 8]:
         resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
@@ -55,7 +57,6 @@ def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dat
                 global_down = 1
         else:
             global_down = orig_w / args.resolution
-    
 
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))

@@ -22,15 +22,37 @@ class Camera(nn.Module):
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
                  train_test_exp = False, is_test_dataset = False, is_test_view = False
                  ):
+        """ 
+        Initialize a camera object.
+        
+        Args:
+            resolution (tuple): The target resolution of image, e.g., (width, height) 
+            colmap_id (int): camera id, 标识用哪台相机拍摄得到的 
+            R (np.ndarray): Rotation matrix of this camera (3, 3)
+            T (np.ndarray): Translation vector of this camera (3,)
+            FoVx (float): Horizontal field of view of the camera in raduians
+            FoVy (float): Vertical field of view of the camera in radians
+            depth_params (dict): Parameters for depth estimation
+            image (PIL.Image): The image captured by this camera 
+            invdepthmap (np.ndarray): The inverse depth map of the image
+            image_name (str): The name of the image
+            uid (int): The unique identifier of this image 
+            trans (np.ndarray): The translation vector to adjust the camera's center (3,)
+            scale (float): The scale factor to adjust the camera's center
+            data_device (str): The device on which the data is stored, e.g., 'cpu' or 'cuda'
+            train_test_exp (bool): do training or testing 
+            is_test_dataset (bool): 
+            is_test_view (bool): 
+        """
         super(Camera, self).__init__()
 
-        self.uid = uid # 相机标识符 防止重叠 
-        self.colmap_id = colmap_id # 相机位姿的id 
-        self.R = R # 旋转矩阵 
-        self.T = T # 平移矩阵
-        self.FoVx = FoVx # 相机在水平方向的视场角 
-        self.FoVy = FoVy # 相机在垂直方向的视场角
-        self.image_name = image_name # 图像名字 
+        self.uid = uid
+        self.colmap_id = colmap_id
+        self.R = R
+        self.T = T
+        self.FoVx = FoVx 
+        self.FoVy = FoVy 
+        self.image_name = image_name 
 
         try:
             self.data_device = torch.device(data_device)
@@ -40,10 +62,11 @@ class Camera(nn.Module):
             self.data_device = torch.device("cuda")
 
         resized_image_rgb = PILtoTorch(image, resolution)
-        gt_image = resized_image_rgb[:3, ...] # (3, H, W) 
+        gt_image = resized_image_rgb[:3, ...]  # (3, H, W) 
+        # Get alpha mask (1, H, W) 
         self.alpha_mask = None
         if resized_image_rgb.shape[0] == 4:
-            self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device) # (1, H, W) 
+            self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device)
         else: 
             self.alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...].to(self.data_device))
 
@@ -57,6 +80,7 @@ class Camera(nn.Module):
         self.image_width = self.original_image.shape[2]
         self.image_height = self.original_image.shape[1]
 
+        # Try to load inv depth map 
         self.invdepthmap = None
         self.depth_reliable = False
         if invdepthmap is not None:
@@ -77,18 +101,20 @@ class Camera(nn.Module):
                 self.invdepthmap = self.invdepthmap[..., 0]
             self.invdepthmap = torch.from_numpy(self.invdepthmap[None]).to(self.data_device)
 
-        self.zfar = 100.0
-        self.znear = 0.01 # 相机的近平面和远平面 
+        self.zfar = 100.0  # far plane 
+        self.znear = 0.01  # near plane 
 
         self.trans = trans
-        self.scale = scale # 平移和缩放的转换 
+        self.scale = scale 
 
-        # 这里视角变换和投影变换中的.transpose(0, 1)是因为在torch中矩阵的存储方式是行优先的，而在OpenGL中是列优先的 
+        # Get the view transformation and projection transformation 
+        # .transpose(0, 1) is because pytorch use row-major storage, while opengl use column-major storage
         self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
-        self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
-        # 在转置成opengl的风格以后，矩阵的相乘顺序也要相反，就和人直观的感觉一样先视角再投影
-        self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0) 
-        self.camera_center = self.world_view_transform.inverse()[3, :3] # 相机光心 
+        self.projection_matrix = getProjectionMatrix(self.znear, self.zfar, self.FoVx, self.FoVy).transpose(0, 1).cuda()
+        # Get the full projection transformation (view + projection)
+        # in opengl manner, the order of matrix multiplication is reversed
+        self.full_proj_transform = self.world_view_transform @ self.projection_matrix 
+        self.camera_center = self.world_view_transform.inverse()[3, :3] 
         
 class MiniCam:
     def __init__(self, width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform):
