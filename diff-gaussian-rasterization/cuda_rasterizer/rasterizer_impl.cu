@@ -122,16 +122,16 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 
 	// Read tile ID from key. Update start/end of tile range if at limit.
 	uint64_t key = point_list_keys[idx];
-	uint32_t currtile = key >> 32;
+	uint32_t currtile = key >> 32; // current tile id 
 	if (idx == 0)
 		ranges[currtile].x = 0;
 	else
 	{
-		uint32_t prevtile = point_list_keys[idx - 1] >> 32;
+		uint32_t prevtile = point_list_keys[idx - 1] >> 32; // previous tile id 
 		if (currtile != prevtile)
 		{
-			ranges[prevtile].y = idx;
-			ranges[currtile].x = idx;
+			ranges[prevtile].y = idx; // the end index of previous tile 
+			ranges[currtile].x = idx; // the start index of current tile 
 		}
 	}
 	if (idx == L - 1)
@@ -301,6 +301,7 @@ int CudaRasterizer::Rasterizer::forward(
 	int bit = getHigherMsb(tile_grid.x * tile_grid.y);
 
 	// Sort complete list of (duplicated) Gaussian indices by keys
+	// depths 按照升序排序 depths小的在前 大的在后
 	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
 		binningState.list_sorting_space,
 		binningState.sorting_size,
@@ -312,6 +313,7 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
 	// Identify start and end of per-tile workloads in sorted list
+	// 根据prev和curr的tile id的不同 找到tile-i在point_list_key列表中的开始和结束索引 [start, end)
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
 			num_rendered,

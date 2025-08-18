@@ -311,12 +311,18 @@ __global__ void preprocessCUDA(int P, int D, int M,
 // Main rasterization method. Collaboratively works on one tile per
 // block, each thread treats one pixel. Alternates between fetching 
 // and rasterizing data.
+/*
+这个函数的计算逻辑是这样，一个thread对应一个pixel，这个thread会存在于一个block里，block和tile是一个概念，
+一个block会对应很多个落在它身上的高斯椭球，需要通过循环把这些高斯椭球全遍历一次，对每次遍历到的高斯椭球都要取它的中心坐标，
+二维协方差矩阵的逆矩阵以及不透明度来计算power，alpha以及衰减T并分别判断能否把它的颜色按一定比例混合到当前pixel的颜色上。
+代码中为了减轻遍历的计算压力，提高计算效率，采用了分round的方式，但归根结底就是要把当前pixel所在block对应的全部高斯椭球全遍历一次
+*/
 template <uint32_t CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
-	const uint2* __restrict__ ranges, // 保存所有block中点的范围 
-	const uint32_t* __restrict__ point_list,
-	int W, int H,
+	const uint2* __restrict__ ranges, // 每个tile-i在point_list_key中的开始和结束索引 [start, end) 
+	const uint32_t* __restrict__ point_list, // 每个tile对应哪个gaussian-idx
+	int W, int H, // image width, height 
 	const float2* __restrict__ points_xy_image, // 所有二维高斯椭球的中心坐标 有P个元素 
 	const float* __restrict__ features, // 所有高斯椭球的颜色 有3*P个元素 
 	const float4* __restrict__ conic_opacity, // 所有高斯椭球的Cov2D的逆矩阵和不透明度 有P个元素 
@@ -325,24 +331,25 @@ renderCUDA(
 	const float* __restrict__ bg_color, // 背景颜色 有3个元素 分别表示对RGB三通道的背景色
 	float* __restrict__ out_color) // 输出颜色 一维数组 按行优先排列的 有3*W*H个元素 
 {
-	// Identify current tile and associated min/max pixel range. 根据block和thread找到当前thread处理的pixel 
+	// Identify current tile and associated min/max pixel range. 
+	// According to current block and thread index, find the current pixel tackled by the current thread.
 	auto block = cg::this_thread_block();
-	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X; // 水平方向blocks的数量 向上取整 
+	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
 	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y }; // block的左上角x,y坐标
 	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) }; // block的右下角x,y坐标 用W,H限制越界
 	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y }; // 当前thread处理的像素x,y坐标 
-	uint32_t pix_id = W * pix.y + pix.x; // 当前pixel的ID 还是x为横轴 y为纵轴
-	float2 pixf = { (float)pix.x, (float)pix.y }; // 转float 
+	uint32_t pix_id = W * pix.y + pix.x; // 当前pixel的ID 
+	float2 pixf = { (float)pix.x, (float)pix.y }; 
 
 	// Check if this thread is associated with a valid pixel or outside.
-	bool inside = pix.x < W&& pix.y < H;
+	bool inside = pix.x < W && pix.y < H;
 	// Done threads can help with fetching, but don't rasterize
 	bool done = !inside;
 
 	// Load start/end range of IDs to process in bit sorted list.
-	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x]; // 找到当前block的索引 根据它提取对应的range
-	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
-	int toDo = range.y - range.x;
+	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x]; // find the current block id, extract range
+	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE); // 每轮加载BLOCK_SIZE个Guassian到共享内存
+	int toDo = range.y - range.x; // the number of gaussians need to do 
 
 	// Allocate storage for batches of collectively fetched data.
 	__shared__ int collected_id[BLOCK_SIZE]; // 存id 
@@ -364,10 +371,10 @@ renderCUDA(
 			break;
 
 		// Collectively fetch per-Gaussian data from global to shared
-		int progress = i * BLOCK_SIZE + block.thread_rank();
+		int progress = i * BLOCK_SIZE + block.thread_rank(); // 结合当前batch和当前thread id得到该thread在全局range中的位置
 		if (range.x + progress < range.y)
 		{
-			int coll_id = point_list[range.x + progress];
+			int coll_id = point_list[range.x + progress]; // gaussian idx 
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
@@ -380,14 +387,13 @@ renderCUDA(
 			// Keep track of current position in range
 			contributor++;
 
-			// Resample using conic matrix (cf. "Surface 
-			// Splatting" by Zwicker et al., 2001)
-			float2 xy = collected_xy[j]; // 当前椭球的中心xy坐标 
+			// Resample using conic matrix (cf. "Surface Splatting" by Zwicker et al., 2001)
+			float2 xy = collected_xy[j]; // center position of current gaussian-j 
 			float2 d = { xy.x - pixf.x, xy.y - pixf.y }; // 计算当前椭球中心和当前pixel的距离 
 			float4 con_o = collected_conic_opacity[j]; // 当前椭球的逆二维协方差矩阵和不透明度 
-			// 用cov2D的逆矩阵的值和d计算power 
 			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
-			if (power > 0.0f)
+
+			if (power > 0.0f) // power条件不满足 不能参与颜色叠加 
 				continue;
 
 			// Eq. (2) from 3D Gaussian splatting paper.
@@ -396,13 +402,16 @@ renderCUDA(
 			// Avoid numerical instabilities (see paper appendix). 
 			// 遵循指数衰减 从二维高斯椭球中心的不透明度opacity 结合exp(power) 计算得到pixel位置的alpha 
 			float alpha = min(0.99f, con_o.w * exp(power)); // 用opacity和power计算alpha 
-			if (alpha < 1.0f / 255.0f)
-				continue; // alpha不能小于1/255 太小说明透明地没了 不能渲染 
+			
+			if (alpha < 1.0f / 255.0f) // alpha条件不满足 不能参与颜色叠加 
+				continue;
+			
 			float test_T = T * (1 - alpha); // 用1-alpha来衰减T 
-			if (test_T < 0.0001f)
+
+			if (test_T < 0.0001f) // test_T条件不满足 不能参与颜色叠加
 			{
 				done = true;
-				continue; // T被衰减到特别小了 说明当前像素的颜色已经够了 不需要再找椭球了 
+				continue;
 			}
 
 			// Eq. (3) from 3D Gaussian splatting paper.
@@ -411,8 +420,7 @@ renderCUDA(
 
 			T = test_T; // 更新T 
 
-			// Keep track of last range entry to update this
-			// pixel.
+			// Keep track of last range entry to update this pixel. 记录当前pixel上已经叠加了多少个椭球了
 			last_contributor = contributor;
 		}
 	}
@@ -424,22 +432,22 @@ renderCUDA(
 		final_T[pix_id] = T; // 记录当前pixel在抛雪球后的T值 
 		n_contrib[pix_id] = last_contributor; // 记录当前pixel上一共被抛了多少个雪球 
 		for (int ch = 0; ch < CHANNELS; ch++)
-			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch]; // 添加背景颜色到每个pixel上
+			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch]; // 添加背景颜色 用一个pixel/thread对应3个RGB的思路
 	}
 }
 
 void FORWARD::render(
 	const dim3 grid, dim3 block, // cuda settings, grid and block 
-	const uint2* ranges, // cuda block related (start, end)
-	const uint32_t* point_list,
-	int W, int H,
-	const float2* means2D,
-	const float* colors,
-	const float4* conic_opacity,
-	float* final_T,
-	uint32_t* n_contrib,
-	const float* bg_color,
-	float* out_color)
+	const uint2* ranges, // 每个tile-i在point_list_key中的开始和结束索引 [start, end)
+	const uint32_t* point_list, // 每个tile对应哪个gaussian-idx
+	int W, int H, // image width, height 
+	const float2* means2D, // in pixel system, center position of gaussian-idx
+	const float* colors, // color of gaussian-idx 
+	const float4* conic_opacity, // inverse of cov2D + opacity of gaussian-idx 
+	float* final_T, // accumulation alpha for each pixel 
+	uint32_t* n_contrib, // number of contribution for each pixel 
+	const float* bg_color, // background color 
+	float* out_color) // output color 
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
