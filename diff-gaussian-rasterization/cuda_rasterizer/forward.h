@@ -21,13 +21,13 @@
 namespace FORWARD
 {
 	// Perform initial steps for each Gaussian prior to rasterization.
-	void preprocess(int P, int D, int M,
-		const float* orig_points,
-		const glm::vec3* scales,
+	void preprocess(int P, int D, int M,  // number of gaussian primitives, active sh degree, (max_sh_degree+1)**2
+		const float* orig_points,  // 3d position of gaussian primitives, (N*3,)
+		const glm::vec3* scales,  // scaling factor, (N,), 每一个是glm::vec3
 		const float scale_modifier,
-		const glm::vec4* rotations,
-		const float* opacities,
-		const float* shs,
+		const glm::vec4* rotations,  // rotation quaternion, (N,), 每一个是glm::vec3 
+		const float* opacities,  // opacity, (N,)
+		const float* shs,  // sh coefficients, (N*16*3)
 		bool* clamped,
 		const float* cov3D_precomp,
 		const float* colors_precomp,

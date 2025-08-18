@@ -67,13 +67,14 @@ __global__ void checkFrustum(int P,
 
 // Generates one key/value pair for all Gaussian / tile overlaps. 
 // Run once per Gaussian (1:N mapping).
+// 把每个高斯椭球占的tile都找到 然后按tile展开 获得每个tile对应高斯椭球idx的key-value
 __global__ void duplicateWithKeys(
 	int P,
 	const float2* points_xy,
 	const float* depths,
-	const uint32_t* offsets,
-	uint64_t* gaussian_keys_unsorted,
-	uint32_t* gaussian_values_unsorted,
+	const uint32_t* offsets, // each gaussian primitive cover how many tiles 
+	uint64_t* gaussian_keys_unsorted, // tile_id | gaussian primitive's depth, total number: num_rendered 
+	uint32_t* gaussian_values_unsorted, // gaussian primitive's idx, total number: num_rendered 
 	int* radii,
 	dim3 grid)
 {
@@ -99,9 +100,9 @@ __global__ void duplicateWithKeys(
 		{
 			for (int x = rect_min.x; x < rect_max.x; x++)
 			{
-				uint64_t key = y * grid.x + x;
+				uint64_t key = y * grid.x + x; // tile id 
 				key <<= 32;
-				key |= *((uint32_t*)&depths[idx]);
+				key |= *((uint32_t*)&depths[idx]); // tile id | depth
 				gaussian_keys_unsorted[off] = key;
 				gaussian_values_unsorted[off] = idx;
 				off++;
@@ -273,7 +274,7 @@ int CudaRasterizer::Rasterizer::forward(
 	), debug)
 
 	// Compute prefix sum over full list of touched tile counts by Gaussians
-	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
+	// E.g., geomState.tiles_touched = [2, 3, 0, 2, 1] -> geomState.point_offsets = [2, 5, 5, 7, 8]
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
 
 	// Retrieve total number of Gaussian instances to launch and resize aux buffers
@@ -307,6 +308,7 @@ int CudaRasterizer::Rasterizer::forward(
 		binningState.point_list_unsorted, binningState.point_list,
 		num_rendered, 0, 32 + bit), debug)
 
+	// Allocate cuda memory for ranges 
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
 	// Identify start and end of per-tile workloads in sorted list

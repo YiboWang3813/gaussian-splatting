@@ -26,7 +26,7 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 	glm::vec3 dir = pos - campos;
 	dir = dir / glm::length(dir);
 
-	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;  // 右边得到的是N*16个元素的vec3数组 左边找首个元素位置再偏移
 	glm::vec3 result = SH_C0 * sh[0];
 
 	if (deg > 0)
@@ -70,7 +70,7 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 	return glm::max(result, 0.0f);
 }
 
-// Forward version of 2D covariance matrix computation 计算二维协方差矩阵 
+// Forward version of 2D covariance matrix computation
 __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix)
 {
 	// The following models the steps outlined by equations 29
@@ -78,24 +78,23 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 	// Additionally considers aspect / scaling of viewport.
 	// Transposes used to account for row-/column-major conventions.
 	
-	// 把高斯椭球的均值从世界坐标系转换到相机坐标系 
 	float3 t = transformPoint4x3(mean, viewmatrix);
 
-	// 限制高斯椭球的均值在相机坐标系中的范围 x<=1.3z*tan(fovx), y<=1.3z*tan(fovy)
+	// 限制t的投影坐标不超过相机的视场角范围 由此更新t的坐标 
 	const float limx = 1.3f * tan_fovx;
-	const float limy = 1.3f * tan_fovy;
+	const float limy = 1.3f * tan_fovy;  // 相机水平和竖直方向上的约束范围 
 	const float txtz = t.x / t.z;
-	const float tytz = t.y / t.z;
-	t.x = min(limx, max(-limx, txtz)) * t.z;
-	t.y = min(limy, max(-limy, tytz)) * t.z;
+	const float tytz = t.y / t.z;  // 点t在水平和竖直方向上的投影
+	t.x = min(limx, max(-limx, txtz)) * t.z;  // 约束点t在水平方向的投影在[-limx, limx]之间 
+	t.y = min(limy, max(-limy, tytz)) * t.z;  // 约束点t在竖直方向的投影在[-limy, limy]之间
 
-	// 构建雅克比矩阵J 
+	// Build the jacobian matrix J  
 	glm::mat3 J = glm::mat3(
 		focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z),
 		0.0f, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z),
 		0, 0, 0);
 
-	// 构建矩阵W 
+	// Extract the matrix W from the view transform matrix 
 	glm::mat3 W = glm::mat3(
 		viewmatrix[0], viewmatrix[4], viewmatrix[8],
 		viewmatrix[1], viewmatrix[5], viewmatrix[9],
@@ -103,20 +102,20 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 
 	glm::mat3 T = W * J;
 
-	// 用对称性恢复三维协方差矩阵 
+	// Recover the 3D covariance matrix using symmetry  
 	glm::mat3 Vrk = glm::mat3(
 		cov3D[0], cov3D[1], cov3D[2],
 		cov3D[1], cov3D[3], cov3D[4],
 		cov3D[2], cov3D[4], cov3D[5]);
 
-	// 计算二维协方差矩阵 现在还是三维等下取前2行和前2列就行
+	// Compute the 2D covariance matrix 
 	glm::mat3 cov = glm::transpose(T) * glm::transpose(Vrk) * T;
 
 	// Apply low-pass filter: every Gaussian should be at least
 	// one pixel wide/high. Discard 3rd row and column.
 	cov[0][0] += 0.3f;
-	cov[1][1] += 0.3f; // 保证协方差矩阵的对角线元素不要太小 
-	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
+	cov[1][1] += 0.3f;  // Ensure the diagonal element of cov2D is not too small 
+	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };  // Discard 3rd row and column
 }
 
 // Forward method for converting scale and rotation properties of each
@@ -159,6 +158,49 @@ __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 r
 }
 
 // Perform initial steps for each Gaussian prior to rasterization.
+
+/**
+ * @brief Preprocesses data on the GPU using CUDA for further computations.
+ *
+ * This kernel processes 3D points and associated data to perform various operations
+ * like scaling, rotating, and projecting the points, while also computing properties like
+ * opacities, covariances, and colors in preparation for rendering or further processing.
+ * The function runs in parallel across multiple CUDA threads, where each thread handles
+ * a portion of the data.
+ *
+ * @tparam C The number of channels or components (depends on the specific use case, e.g., 1 for grayscale, 3 for RGB).
+ *
+ * @param P The number of points (size of the point cloud).
+ * @param D The active sh degree.
+ * @param M The max sh degree coefficients.
+ * @param orig_points Means of all gaussian primitives in the world coordinate system. 
+ * @param scales Scaling factors of all gaussian primitives.  
+ * @param scale_modifier A modifier for the scaling.
+ * @param rotations Rotation quaternions of all gaussian primitives. 
+ * @param opacities Opacities of all gaussian primitives.
+ * @param shs Spherical harmonics coefficients of all gaussian primitives.
+ * @param clamped Clipping status of all Gaussian primitives' colors, arranged in RGB order. True means the color is negative.
+ * @param cov3D_precomp Pre-computed 3D covariance matrices for all Gaussian primitives.
+ * @param colors_precomp Pre-computed color values (RGB) for all Gaussian primitives.
+ * @param viewmatrix View matrix to achieve world-to-camera transformation. 
+ * @param projmatrix Full matrix to achieve world-to-clip space transformation. 
+ * @param cam_pos Camera center in the world coordinate system.
+ * @param W Image width. 
+ * @param H Image height. 
+ * @param tan_fovx The tangent of the horizontal field of view angle.
+ * @param tan_fovy The tangent of the vertical field of view angle.
+ * @param focal_x The focal length in the x-direction (usually in pixels).
+ * @param focal_y The focal length in the y-direction (usually in pixels).
+ * @param radii Radius of projected 2D circle in the pixel coodinate system of all gaussian primitives. 
+ * @param points_xy_image Means of projected gaussian primitives in the pixel coordinate.
+ * @param depths Depths of gaussian primitives in the camera system. 
+ * @param cov3Ds Pointer to an array to store the 3D covariance matrices.
+ * @param rgb Pointer to an array storing RGB values for each point.
+ * @param conic_opacity Pointer to an array storing opacity values and inverse 2D covariance matrices.
+ * @param grid The grid dimensions for the CUDA kernel.
+ * @param tiles_touched Indicates whether the projection of a Gaussian ellipsoid touches a CUDA block.
+ * @param prefiltered A flag indicating whether Gaussian ellipsoids that do not meet criteria should be pre-filtered (currently unused).
+ */
 template<int C>
 __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
@@ -186,7 +228,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	uint32_t* tiles_touched,
 	bool prefiltered)
 {
-	auto idx = cg::this_grid().thread_rank();
+	auto idx = cg::this_grid().thread_rank();  // 获得当前线程在grid中的全局索引 
 	if (idx >= P)
 		return;
 
@@ -201,10 +243,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		return;
 
 	// Transform point by projecting
-	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] }; // 拿到idx对应的原始点坐标 
-	float4 p_hom = transformPoint4x4(p_orig, projmatrix); // 投影变换 这里应该也包含了视角变换
+	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };  // 拿到idx点的世界坐标  
+	float4 p_hom = transformPoint4x4(p_orig, projmatrix);  // 将世界坐标变换到裁剪空间 
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
-	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w }; // 同除以齐次w 归一化投影坐标 
+	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w }; // 齐次除法w 转换到NDC坐标系
 
 	// If 3D covariance matrix is precomputed, use it, otherwise compute
 	// from scaling and rotation parameters. 计算三维协方差矩阵 
@@ -213,7 +255,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	{
 		cov3D = cov3D_precomp + idx * 6;
 	}
-	else // 没算过就计算 再放到全部椭球的cov3Ds中 
+	else // 没算过就计算 再放到cov3Ds中 
 	{
 		computeCov3D(scales[idx], scale_modifier, rotations[idx], cov3Ds + idx * 6);
 		cov3D = cov3Ds + idx * 6;
@@ -222,7 +264,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// Compute 2D screen-space covariance matrix 计算二维协方差矩阵 
 	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
 
-	// Invert covariance (EWA algorithm) 计算协方差矩阵的逆 
+	// Invert covariance (EWA algorithm) 计算cov2D的逆 
 	float det = (cov.x * cov.z - cov.y * cov.y); // 计算cov的行列式 
 	if (det == 0.0f) // 行列式为0 不进行后续计算 
 		return;
@@ -232,16 +274,17 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// Compute extent in screen space (by finding eigenvalues of
 	// 2D covariance matrix). Use extent to compute a bounding rectangle
 	// of screen-space tiles that this Gaussian overlaps with. Quit if
-	// rectangle covers 0 tiles. 
-	// 计算二维高斯分布椭圆的半径 
+	// rectangle covers 0 tiles. 这里的tile就是block
+
+	// 用cov2D计算得到这个2D高斯分布最大能覆盖的像素范围 用圆形来覆盖
 	float mid = 0.5f * (cov.x + cov.z);
 	float lambda1 = mid + sqrt(max(0.1f, mid * mid - det));
-	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
-	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
-	// 把均值从NDC坐标系转到像素坐标系 
-	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
+	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));  // 计算协方差矩阵的特征值 对应高斯分布椭圆的半轴长度
+	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));  // 根据特征值得到一个最大的覆盖范围
+	
+	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) }; // 把均值从NDC坐标系转到像素坐标系 
 	uint2 rect_min, rect_max;
-	getRect(point_image, my_radius, rect_min, rect_max, grid); // 获得当前椭球的外接矩形尺寸
+	getRect(point_image, my_radius, rect_min, rect_max, grid); // 获得2d椭球的外接矩形在整个grid中所处的位置 block索引形式
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
 
@@ -257,9 +300,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	}
 
 	// Store some useful helper data for the next steps.
-	depths[idx] = p_view.z; // 当前椭球的深度 用它在相机坐标系中的z坐标 
-	radii[idx] = my_radius; // 二维高斯椭球的半径 
-	points_xy_image[idx] = point_image; // 二维高斯椭球的中心坐标 
+	depths[idx] = p_view.z;  // 该高斯椭球在相机坐标系中的z坐标 
+	radii[idx] = my_radius;  // 该高斯椭球投影到像素坐标系中得到的2D圆的半径 
+	points_xy_image[idx] = point_image;  // 该高斯椭球在像素坐标系中的中心坐标
 	// Inverse 2D covariance and opacity neatly pack into one float4
 	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] }; // 逆二维协方差矩阵 + 不透明度 
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x); // 该高斯椭球是否触及图块 触及>0 不触及=0
@@ -386,8 +429,8 @@ renderCUDA(
 }
 
 void FORWARD::render(
-	const dim3 grid, dim3 block,
-	const uint2* ranges,
+	const dim3 grid, dim3 block, // cuda settings, grid and block 
+	const uint2* ranges, // cuda block related (start, end)
 	const uint32_t* point_list,
 	int W, int H,
 	const float2* means2D,

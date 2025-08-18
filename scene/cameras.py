@@ -109,12 +109,12 @@ class Camera(nn.Module):
 
         # Get the view transformation and projection transformation 
         # .transpose(0, 1) is because pytorch use row-major storage, while opengl use column-major storage
-        self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
-        self.projection_matrix = getProjectionMatrix(self.znear, self.zfar, self.FoVx, self.FoVy).transpose(0, 1).cuda()
+        self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()  # (4, 4)
+        self.projection_matrix = getProjectionMatrix(self.znear, self.zfar, self.FoVx, self.FoVy).transpose(0, 1).cuda()  # (4, 4)
         # Get the full projection transformation (view + projection)
         # in opengl manner, the order of matrix multiplication is reversed
         self.full_proj_transform = self.world_view_transform @ self.projection_matrix 
-        self.camera_center = self.world_view_transform.inverse()[3, :3] 
+        self.camera_center = self.world_view_transform.inverse()[3, :3]  # (3,)
         
 class MiniCam:
     def __init__(self, width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform):
