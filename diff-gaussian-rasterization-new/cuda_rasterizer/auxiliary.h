@@ -17,6 +17,7 @@
 
 #define BLOCK_SIZE (BLOCK_X * BLOCK_Y)
 #define NUM_WARPS (BLOCK_SIZE/32)
+
 // Spherical harmonics coefficients
 __device__ const float SH_C0 = 0.28209479177387814f;
 __device__ const float SH_C1 = 0.4886025119029199f;
@@ -39,18 +40,20 @@ __device__ const float SH_C3[] = {
 
 __forceinline__ __device__ float ndc2Pix(float v, int S)
 {
-	return ((v + 1.0) * S - 1.0) * 0.5;
+	return ((v + 1.0) * S - 1.0) * 0.5; // v in [-1, 1]
 }
 
 __forceinline__ __device__ void getRect(const float2 p, int max_radius, uint2& rect_min, uint2& rect_max, dim3 grid)
 {
+	// 在像素坐标系中 根据均值p和最大覆盖范围半径max_radius 得到该高斯分布的最大外接矩阵
+	// 的左上角(x,y)坐标以及右下角(x,y)坐标 此处x,y表示该矩形的顶点所在grid中的block索引 
 	rect_min = {
 		min(grid.x, max((int)0, (int)((p.x - max_radius) / BLOCK_X))),
-		min(grid.y, max((int)0, (int)((p.y - max_radius) / BLOCK_Y)))
+		min(grid.y, max((int)0, (int)((p.y - max_radius) / BLOCK_Y))) // 向下取整
 	};
 	rect_max = {
 		min(grid.x, max((int)0, (int)((p.x + max_radius + BLOCK_X - 1) / BLOCK_X))),
-		min(grid.y, max((int)0, (int)((p.y + max_radius + BLOCK_Y - 1) / BLOCK_Y)))
+		min(grid.y, max((int)0, (int)((p.y + max_radius + BLOCK_Y - 1) / BLOCK_Y))) // 向上取整
 	};
 }
 
@@ -69,6 +72,7 @@ __forceinline__ __device__ void getRect(const float2 p, int2 ext_rect, uint2& re
 
 __forceinline__ __device__ float3 transformPoint4x3(const float3& p, const float* matrix)
 {
+	// 把p看做 [x, y, z, 1] 行向量 左乘matrix (4, 4)
 	float3 transformed = {
 		matrix[0] * p.x + matrix[4] * p.y + matrix[8] * p.z + matrix[12],
 		matrix[1] * p.x + matrix[5] * p.y + matrix[9] * p.z + matrix[13],
@@ -79,6 +83,7 @@ __forceinline__ __device__ float3 transformPoint4x3(const float3& p, const float
 
 __forceinline__ __device__ float4 transformPoint4x4(const float3& p, const float* matrix)
 {
+	// 把p看做[x, y, z, 1] 行向量 左乘matrix (4, 4)
 	float4 transformed = {
 		matrix[0] * p.x + matrix[4] * p.y + matrix[8] * p.z + matrix[12],
 		matrix[1] * p.x + matrix[5] * p.y + matrix[9] * p.z + matrix[13],
@@ -160,7 +165,7 @@ __forceinline__ __device__ bool in_frustum(int idx,
 	// Bring points to screen space
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
-	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w }; // 这3句被注释掉了 
 	p_view = transformPoint4x3(p_orig, viewmatrix);
 
 	if (p_view.z <= 0.2f)// || ((p_proj.x < -1.3 || p_proj.x > 1.3 || p_proj.y < -1.3 || p_proj.y > 1.3)))
@@ -170,7 +175,7 @@ __forceinline__ __device__ bool in_frustum(int idx,
 			printf("Point is filtered although prefiltered is set. This shouldn't happen!");
 			__trap();
 		}
-		return false;
+		return false; // 该点在相机坐标系下z太小 说明不在视锥之内
 	}
 	return true;
 }
