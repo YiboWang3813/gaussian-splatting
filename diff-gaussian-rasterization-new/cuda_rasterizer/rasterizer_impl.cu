@@ -67,13 +67,14 @@ __global__ void checkFrustum(int P,
 
 // Generates one key/value pair for all Gaussian / tile overlaps. 
 // Run once per Gaussian (1:N mapping).
+// 把每个高斯椭球占的tile都找到 然后按tile展开 获得每个tile对应高斯椭球idx的key-value
 __global__ void duplicateWithKeys(
 	int P,
 	const float2* points_xy,
 	const float* depths,
-	const uint32_t* offsets,
-	uint64_t* gaussian_keys_unsorted,
-	uint32_t* gaussian_values_unsorted,
+	const uint32_t* offsets, // each gaussian primitive cover how many tiles 
+	uint64_t* gaussian_keys_unsorted, // tile_id | gaussian primitive's depth, total number: num_rendered 
+	uint32_t* gaussian_values_unsorted, // gaussian primitive's idx, total number: num_rendered 
 	int* radii,
 	dim3 grid)
 {
@@ -99,9 +100,9 @@ __global__ void duplicateWithKeys(
 		{
 			for (int x = rect_min.x; x < rect_max.x; x++)
 			{
-				uint64_t key = y * grid.x + x;
+				uint64_t key = y * grid.x + x; // tile id 
 				key <<= 32;
-				key |= *((uint32_t*)&depths[idx]);
+				key |= *((uint32_t*)&depths[idx]); // tile id | depths
 				gaussian_keys_unsorted[off] = key;
 				gaussian_values_unsorted[off] = idx;
 				off++;
@@ -113,6 +114,7 @@ __global__ void duplicateWithKeys(
 // Check keys to see if it is at the start/end of one tile's range in 
 // the full sorted list. If yes, write start/end of this tile. 
 // Run once per instanced (duplicated) Gaussian ID.
+// 根据tile-gaussian对应列表 point_list_keys 找到tile-i的开始和结束区间 [start, end)
 __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* ranges)
 {
 	auto idx = cg::this_grid().thread_rank();
@@ -121,16 +123,16 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 
 	// Read tile ID from key. Update start/end of tile range if at limit.
 	uint64_t key = point_list_keys[idx];
-	uint32_t currtile = key >> 32;
+	uint32_t currtile = key >> 32; // current tile id 
 	if (idx == 0)
 		ranges[currtile].x = 0;
 	else
 	{
-		uint32_t prevtile = point_list_keys[idx - 1] >> 32;
-		if (currtile != prevtile)
+		uint32_t prevtile = point_list_keys[idx - 1] >> 32; // previous tile id 
+		if (currtile != prevtile) // 出现前后不一致
 		{
-			ranges[prevtile].y = idx;
-			ranges[currtile].x = idx;
+			ranges[prevtile].y = idx; // the end of previous tile 
+			ranges[currtile].x = idx; // the start of current tile 
 		}
 	}
 	if (idx == L - 1)
@@ -277,6 +279,7 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Compute prefix sum over full list of touched tile counts by Gaussians
 	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
+	// E.g., geomState.tiles_touched = [2, 3, 0, 2, 1] -> geomState.point_offsets = [2, 5, 5, 7, 8]
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
 
 	// Retrieve total number of Gaussian instances to launch and resize aux buffers
@@ -303,6 +306,7 @@ int CudaRasterizer::Rasterizer::forward(
 	int bit = getHigherMsb(tile_grid.x * tile_grid.y);
 
 	// Sort complete list of (duplicated) Gaussian indices by keys
+	// 排序 相同的tile会放在一起 内部按depth的大小排序 小的在前面
 	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
 		binningState.list_sorting_space,
 		binningState.sorting_size,
