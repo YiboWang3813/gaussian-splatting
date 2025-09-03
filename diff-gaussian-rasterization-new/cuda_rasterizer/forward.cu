@@ -267,42 +267,48 @@ __global__ void preprocessCUDA(int P, int D, int M, // P是高斯椭球的数量
 // Main rasterization method. Collaboratively works on one tile per
 // block, each thread treats one pixel. Alternates between fetching 
 // and rasterizing data.
+/*
+这个函数的计算逻辑是这样，一个thread对应一个pixel，这个thread会存在于一个block里，block和tile是一个概念，
+一个block会对应很多个落在它身上的高斯椭球，需要通过循环把这些高斯椭球全遍历一次，对每次遍历到的高斯椭球都要取它的中心坐标，
+二维协方差矩阵的逆矩阵以及不透明度来计算power，alpha以及衰减T并分别判断能否把它的颜色按一定比例混合到当前pixel的颜色上。
+代码中为了减轻遍历的计算压力，提高计算效率，采用了分round的方式，但归根结底就是要把当前pixel所在block对应的全部高斯椭球全遍历一次
+*/
 template <uint32_t CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
-	const uint2* __restrict__ ranges,
-	const uint32_t* __restrict__ point_list,
-	int W, int H,
-	const float2* __restrict__ points_xy_image,
-	const float* __restrict__ features,
-	const float4* __restrict__ conic_opacity,
-	float* __restrict__ final_T,
-	uint32_t* __restrict__ n_contrib,
-	const float* __restrict__ bg_color,
-	float* __restrict__ out_color,
-	const float* __restrict__ depths,
-	float* __restrict__ invdepth)
+	const uint2* __restrict__ ranges,  // 每个tile_i在point_list_key中的开始和结束索引 [start, end)
+	const uint32_t* __restrict__ point_list,  // 每个tile对应哪个gaussian_idx
+	int W, int H,  // image width, height
+	const float2* __restrict__ points_xy_image,  // 所有高斯椭球在像素坐标系中的中心坐标 len=P
+	const float* __restrict__ features,  // 所有高斯椭球的RGB颜色 len=P*3
+	const float4* __restrict__ conic_opacity,  // 所有高斯椭球的cov_inv + opacity len=P
+	float* __restrict__ final_T,  // 每个像素上最终的T值 len=W*H
+	uint32_t* __restrict__ n_contrib,  // 每个像素上有贡献的高斯椭球数量 len=W*H
+	const float* __restrict__ bg_color,  // 背景颜色 默认为黑色0,0,0
+	float* __restrict__ out_color,  // 输出颜色 按行优先排列 len=3*W*H
+	const float* __restrict__ depths,  // 所有高斯椭球在相机坐标系中均值的z len=P
+	float* __restrict__ invdepth) // 每个像素上的逆深度 采用类似的alpha混合思想 len=W*H
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
-	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
-	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
-	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
-	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
-	uint32_t pix_id = W * pix.y + pix.x;
+	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;  // 水平方向有多少block 
+	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };  // 该block左上角像素的坐标
+	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };  // 该block右下角像素的坐标
+	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };  // 当前处理像素的坐标
+	uint32_t pix_id = W * pix.y + pix.x;  // 二维坐标转一维id 
 	float2 pixf = { (float)pix.x, (float)pix.y };
 
 	// Check if this thread is associated with a valid pixel or outside.
-	bool inside = pix.x < W&& pix.y < H;
+	bool inside = pix.x < W && pix.y < H;
 	// Done threads can help with fetching, but don't rasterize
 	bool done = !inside;
 
 	// Load start/end range of IDs to process in bit sorted list.
-	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
-	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
-	int toDo = range.y - range.x;
+	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];  // 根据当前block_id找到其对应的range
+	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);  // 一个round处理BLOCK_SIZE个椭球 一共需要多少rounds
+	int toDo = range.y - range.x;  // 一共需要处理的椭球数量
 
-	// Allocate storage for batches of collectively fetched data.
+	// Allocate storage for batches of collectively fetched data. 共享内存法 加快速度
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
@@ -311,7 +317,7 @@ renderCUDA(
 	float T = 1.0f;
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
-	float C[CHANNELS] = { 0 };
+	float C[CHANNELS] = { 0 };  // 当前像素得到的RGB颜色
 
 	float expected_invdepth = 0.0f;
 
@@ -324,10 +330,10 @@ renderCUDA(
 			break;
 
 		// Collectively fetch per-Gaussian data from global to shared
-		int progress = i * BLOCK_SIZE + block.thread_rank();
+		int progress = i * BLOCK_SIZE + block.thread_rank();  // 结合当前batch和当前thread id得到该thread在全局range中的位置
 		if (range.x + progress < range.y)
 		{
-			int coll_id = point_list[range.x + progress];
+			int coll_id = point_list[range.x + progress];  // gaussian_idx
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
@@ -342,9 +348,10 @@ renderCUDA(
 
 			// Resample using conic matrix (cf. "Surface 
 			// Splatting" by Zwicker et al., 2001)
-			float2 xy = collected_xy[j];
-			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
-			float4 con_o = collected_conic_opacity[j];
+			float2 xy = collected_xy[j];  // 高斯椭球j在像素坐标系下的坐标 
+			float2 d = { xy.x - pixf.x, xy.y - pixf.y };  // 高斯椭球j和当前像素pix的坐标之差
+			float4 con_o = collected_conic_opacity[j];  // 高斯椭球j的inv_cov以及opacity
+			// 计算power并判断是否满足继续条件
 			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			if (power > 0.0f)
 				continue;
@@ -353,9 +360,11 @@ renderCUDA(
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
+			// 计算alpha并判断是否满足继续条件
 			float alpha = min(0.99f, con_o.w * exp(power));
 			if (alpha < 1.0f / 255.0f)
 				continue;
+			// 计算test_T并判断是否满足继续条件
 			float test_T = T * (1 - alpha);
 			if (test_T < 0.0001f)
 			{
@@ -364,10 +373,11 @@ renderCUDA(
 			}
 
 			// Eq. (3) from 3D Gaussian splatting paper.
+			// 该高斯椭球j的颜色*alpha*T才是染到该pix上的颜色
 			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;  
 
-			if(invdepth)
+			if (invdepth)  // 用类似的原理alpha混合深度并记录 
 			expected_invdepth += (1 / depths[collected_id[j]]) * alpha * T;
 
 			T = test_T;

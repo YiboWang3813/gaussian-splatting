@@ -317,6 +317,7 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
 	// Identify start and end of per-tile workloads in sorted list
+	// 根据prev和curr的tile_id的不同 找到tile_i在point_list_key列表中的开始和结束索引 [start, end)
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
 			num_rendered,
