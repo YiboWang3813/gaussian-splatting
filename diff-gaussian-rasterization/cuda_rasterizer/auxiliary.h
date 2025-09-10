@@ -40,8 +40,7 @@ __device__ const float SH_C3[] = {
 
 __forceinline__ __device__ float ndc2Pix(float v, int S)
 {
-	// v的范围是[-1, 1] 
-	return ((v + 1.0) * S - 1.0) * 0.5;
+	return ((v + 1.0) * S - 1.0) * 0.5; // v in [-1, 1]
 }
 
 __forceinline__ __device__ void getRect(const float2 p, int max_radius, uint2& rect_min, uint2& rect_max, dim3 grid)
@@ -50,13 +49,26 @@ __forceinline__ __device__ void getRect(const float2 p, int max_radius, uint2& r
 	// 的左上角(x,y)坐标以及右下角(x,y)坐标 此处x,y表示该矩形的顶点所在grid中的block索引 
 	rect_min = {
 		min(grid.x, max((int)0, (int)((p.x - max_radius) / BLOCK_X))),
-		min(grid.y, max((int)0, (int)((p.y - max_radius) / BLOCK_Y)))  // blockIdx做了向下取整
+		min(grid.y, max((int)0, (int)((p.y - max_radius) / BLOCK_Y))) // 向下取整
 	};
 	rect_max = {
 		min(grid.x, max((int)0, (int)((p.x + max_radius + BLOCK_X - 1) / BLOCK_X))),
-		min(grid.y, max((int)0, (int)((p.y + max_radius + BLOCK_Y - 1) / BLOCK_Y)))  // blockIdx做了向上取整
+		min(grid.y, max((int)0, (int)((p.y + max_radius + BLOCK_Y - 1) / BLOCK_Y))) // 向上取整
 	};
 }
+
+__forceinline__ __device__ void getRect(const float2 p, int2 ext_rect, uint2& rect_min, uint2& rect_max, dim3 grid)
+{
+	rect_min = {
+		min(grid.x, max((int)0, (int)((p.x - ext_rect.x) / BLOCK_X))),
+		min(grid.y, max((int)0, (int)((p.y - ext_rect.y) / BLOCK_Y)))
+	};
+	rect_max = {
+		min(grid.x, max((int)0, (int)((p.x + ext_rect.x + BLOCK_X - 1) / BLOCK_X))),
+		min(grid.y, max((int)0, (int)((p.y + ext_rect.y + BLOCK_Y - 1) / BLOCK_Y)))
+	};
+}
+
 
 __forceinline__ __device__ float3 transformPoint4x3(const float3& p, const float* matrix)
 {
@@ -148,15 +160,12 @@ __forceinline__ __device__ bool in_frustum(int idx,
 	bool prefiltered,
 	float3& p_view)
 {
-	// Get the coordinate of this gaussian primitive corresponding to this thread 
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
-	
-	// 没用 在转齐次表达形式 
-	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
-	float p_w = 1.0f / (p_hom.w + 0.0000001f);
-	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
 	// Bring points to screen space
+	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
+	float p_w = 1.0f / (p_hom.w + 0.0000001f);
+	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w }; // 这3句被注释掉了 
 	p_view = transformPoint4x3(p_orig, viewmatrix);
 
 	if (p_view.z <= 0.2f)// || ((p_proj.x < -1.3 || p_proj.x > 1.3 || p_proj.y < -1.3 || p_proj.y > 1.3)))
@@ -166,7 +175,7 @@ __forceinline__ __device__ bool in_frustum(int idx,
 			printf("Point is filtered although prefiltered is set. This shouldn't happen!");
 			__trap();
 		}
-		return false; // p_view的z坐标太小说明当前点不在视椎以内 
+		return false; // 该点在相机坐标系下z太小 说明不在视锥之内
 	}
 	return true;
 }

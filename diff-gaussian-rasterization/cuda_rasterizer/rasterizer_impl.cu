@@ -102,7 +102,7 @@ __global__ void duplicateWithKeys(
 			{
 				uint64_t key = y * grid.x + x; // tile id 
 				key <<= 32;
-				key |= *((uint32_t*)&depths[idx]); // tile id | depth
+				key |= *((uint32_t*)&depths[idx]); // tile id | depths
 				gaussian_keys_unsorted[off] = key;
 				gaussian_values_unsorted[off] = idx;
 				off++;
@@ -114,6 +114,7 @@ __global__ void duplicateWithKeys(
 // Check keys to see if it is at the start/end of one tile's range in 
 // the full sorted list. If yes, write start/end of this tile. 
 // Run once per instanced (duplicated) Gaussian ID.
+// 根据tile-gaussian对应列表 point_list_keys 找到tile-i的开始和结束区间 [start, end)
 __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* ranges)
 {
 	auto idx = cg::this_grid().thread_rank();
@@ -128,10 +129,10 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 	else
 	{
 		uint32_t prevtile = point_list_keys[idx - 1] >> 32; // previous tile id 
-		if (currtile != prevtile)
+		if (currtile != prevtile) // 出现前后不一致
 		{
-			ranges[prevtile].y = idx; // the end index of previous tile 
-			ranges[currtile].x = idx; // the start index of current tile 
+			ranges[prevtile].y = idx; // the end of previous tile 
+			ranges[currtile].x = idx; // the start of current tile 
 		}
 	}
 	if (idx == L - 1)
@@ -217,6 +218,8 @@ int CudaRasterizer::Rasterizer::forward(
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	float* out_color,
+	float* depth,
+	bool antialiasing,
 	int* radii,
 	bool debug)
 {
@@ -270,10 +273,12 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.conic_opacity,
 		tile_grid,
 		geomState.tiles_touched,
-		prefiltered
+		prefiltered,
+		antialiasing
 	), debug)
 
 	// Compute prefix sum over full list of touched tile counts by Gaussians
+	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
 	// E.g., geomState.tiles_touched = [2, 3, 0, 2, 1] -> geomState.point_offsets = [2, 5, 5, 7, 8]
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
 
@@ -301,7 +306,7 @@ int CudaRasterizer::Rasterizer::forward(
 	int bit = getHigherMsb(tile_grid.x * tile_grid.y);
 
 	// Sort complete list of (duplicated) Gaussian indices by keys
-	// depths 按照升序排序 depths小的在前 大的在后
+	// 排序 相同的tile会放在一起 内部按depth的大小排序 小的在前面
 	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
 		binningState.list_sorting_space,
 		binningState.sorting_size,
@@ -309,11 +314,10 @@ int CudaRasterizer::Rasterizer::forward(
 		binningState.point_list_unsorted, binningState.point_list,
 		num_rendered, 0, 32 + bit), debug)
 
-	// Allocate cuda memory for ranges 
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
 	// Identify start and end of per-tile workloads in sorted list
-	// 根据prev和curr的tile id的不同 找到tile-i在point_list_key列表中的开始和结束索引 [start, end)
+	// 根据prev和curr的tile_id的不同 找到tile_i在point_list_key列表中的开始和结束索引 [start, end)
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
 			num_rendered,
@@ -334,7 +338,9 @@ int CudaRasterizer::Rasterizer::forward(
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		background,
-		out_color), debug)
+		out_color,
+		geomState.depths,
+		depth), debug)
 
 	return num_rendered;
 }
@@ -348,6 +354,7 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* means3D,
 	const float* shs,
 	const float* colors_precomp,
+	const float* opacities,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
@@ -361,15 +368,18 @@ void CudaRasterizer::Rasterizer::backward(
 	char* binning_buffer,
 	char* img_buffer,
 	const float* dL_dpix,
+	const float* dL_invdepths,
 	float* dL_dmean2D,
 	float* dL_dconic,
 	float* dL_dopacity,
 	float* dL_dcolor,
+	float* dL_dinvdepth,
 	float* dL_dmean3D,
 	float* dL_dcov3D,
 	float* dL_dsh,
 	float* dL_dscale,
 	float* dL_drot,
+	bool antialiasing,
 	bool debug)
 {
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
@@ -401,13 +411,16 @@ void CudaRasterizer::Rasterizer::backward(
 		geomState.means2D,
 		geomState.conic_opacity,
 		color_ptr,
+		geomState.depths,
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		dL_dpix,
+		dL_invdepths,
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,
 		dL_dopacity,
-		dL_dcolor), debug)
+		dL_dcolor,
+		dL_dinvdepth), debug);
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
@@ -418,6 +431,7 @@ void CudaRasterizer::Rasterizer::backward(
 		radii,
 		shs,
 		geomState.clamped,
+		opacities,
 		(glm::vec3*)scales,
 		(glm::vec4*)rotations,
 		scale_modifier,
@@ -429,10 +443,13 @@ void CudaRasterizer::Rasterizer::backward(
 		(glm::vec3*)campos,
 		(float3*)dL_dmean2D,
 		dL_dconic,
+		dL_dinvdepth,
+		dL_dopacity,
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,
 		dL_dcov3D,
 		dL_dsh,
 		(glm::vec3*)dL_dscale,
-		(glm::vec4*)dL_drot), debug)
+		(glm::vec4*)dL_drot,
+		antialiasing), debug);
 }

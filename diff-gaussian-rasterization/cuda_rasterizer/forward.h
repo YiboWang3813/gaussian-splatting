@@ -21,13 +21,13 @@
 namespace FORWARD
 {
 	// Perform initial steps for each Gaussian prior to rasterization.
-	void preprocess(int P, int D, int M,  // number of gaussian primitives, active sh degree, (max_sh_degree+1)**2
-		const float* orig_points,  // 3d position of gaussian primitives, (N*3,)
-		const glm::vec3* scales,  // scaling factor, (N,), 每一个是glm::vec3
+	void preprocess(int P, int D, int M,
+		const float* orig_points,
+		const glm::vec3* scales,
 		const float scale_modifier,
-		const glm::vec4* rotations,  // rotation quaternion, (N,), 每一个是glm::vec3 
-		const float* opacities,  // opacity, (N,)
-		const float* shs,  // sh coefficients, (N*16*3)
+		const glm::vec4* rotations,
+		const float* opacities,
+		const float* shs,
 		bool* clamped,
 		const float* cov3D_precomp,
 		const float* colors_precomp,
@@ -45,7 +45,8 @@ namespace FORWARD
 		float4* conic_opacity,
 		const dim3 grid,
 		uint32_t* tiles_touched,
-		bool prefiltered);
+		bool prefiltered,
+		bool antialiasing);
 
 	// Main rasterization method.
 	void render(
@@ -59,7 +60,9 @@ namespace FORWARD
 		float* final_T,
 		uint32_t* n_contrib,
 		const float* bg_color,
-		float* out_color);
+		float* out_color,
+		float* depths,
+		float* depth);
 }
 
 
