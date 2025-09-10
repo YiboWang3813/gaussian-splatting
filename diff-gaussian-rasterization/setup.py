@@ -14,6 +14,8 @@ from torch.utils.cpp_extension import CUDAExtension, BuildExtension
 import os
 os.path.dirname(os.path.abspath(__file__))
 
+glm_path = os.environ.get("GLM_PATH", "")
+
 setup(
     name="diff_gaussian_rasterization",
     packages=['diff_gaussian_rasterization'],
@@ -26,7 +28,7 @@ setup(
             "cuda_rasterizer/backward.cu",
             "rasterize_points.cu",
             "ext.cpp"],
-            extra_compile_args={"nvcc": ["-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/")]})
+            extra_compile_args={"nvcc": ["-I" + glm_path]})
         ],
     cmdclass={
         'build_ext': BuildExtension
