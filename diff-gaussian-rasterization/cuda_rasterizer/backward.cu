@@ -20,7 +20,13 @@ __device__ __forceinline__ float sq(float x) { return x * x; }
 
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
-__device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs)
+__device__ void computeColorFromSH(
+	int idx, int deg, int max_coeffs, 
+	const glm::vec3* means, glm::vec3 campos, 
+	const float* shs, const bool* clamped, 
+	const glm::vec3* dL_dcolor, // 输入 损失L对颜色RGB的梯度 
+	glm::vec3* dL_dmeans, // 输出 损失L对三维位置mean的梯度 来自球谐函数的部分 
+	glm::vec3* dL_dshs) // 输出 损失L对球谐函数系数sh的梯度 每16个对应1个椭球
 {
 	// Compute intermediate values, as it is done during forward
 	glm::vec3 pos = means[idx];
@@ -152,11 +158,11 @@ __global__ void computeCov2DCUDA(int P,
 	const float tan_fovx, float tan_fovy,
 	const float* view_matrix,
 	const float* opacities,
-	const float* dL_dconics,
+	const float* dL_dconics, // 输入 损失L对二维协方差矩阵的逆矩阵C^{-1}的梯度 每4个1组
 	float* dL_dopacity,
 	const float* dL_dinvdepth,
-	float3* dL_dmeans,
-	float* dL_dcov,
+	float3* dL_dmeans, // 输出 损失L对三维位置mean的梯度 来自二维协方差矩阵的部分
+	float* dL_dcov, // 输出 损失L对三维协方差矩阵cov的梯度 每6个1组
 	bool antialiasing)
 {
 	auto idx = cg::this_grid().thread_rank();
@@ -327,7 +333,11 @@ __global__ void computeCov2DCUDA(int P,
 
 // Backward pass for the conversion of scale and rotation to a 
 // 3D covariance matrix for each Gaussian. 
-__device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const glm::vec4 rot, const float* dL_dcov3Ds, glm::vec3* dL_dscales, glm::vec4* dL_drots)
+__device__ void computeCov3D(
+	int idx, const glm::vec3 scale, float mod, const glm::vec4 rot, 
+	const float* dL_dcov3Ds, // 输入 损失L对三维协方差矩阵cov的梯度 每6个1组
+	glm::vec3* dL_dscales, // 输出 损失L对缩放因子s的梯度
+	glm::vec4* dL_drots) // 输出 损失L对旋转四元数q的梯度
 {
 	// Recompute (intermediate) results for the 3D covariance computation.
 	glm::vec4 q = rot;// / glm::length(rot);
@@ -407,13 +417,13 @@ __global__ void preprocessCUDA(
 	const float scale_modifier,
 	const float* proj,
 	const glm::vec3* campos,
-	const float3* dL_dmean2D,
-	glm::vec3* dL_dmeans,
-	float* dL_dcolor,
-	float* dL_dcov3D,
-	float* dL_dsh,
-	glm::vec3* dL_dscale,
-	glm::vec4* dL_drot,
+	const float3* dL_dmean2D, // 输入 损失L对二维位置mean2D的梯度 
+	glm::vec3* dL_dmeans, // 输入以及输出 损失L对三维位置mean的梯度 输入是包含了二维协方差矩阵cov2D的部分
+	float* dL_dcolor, // 输入 损失L对颜色RGB的梯度 每3个1组 
+	float* dL_dcov3D, // 输入 损失L对三维协方差矩阵cov的梯度 每6个1组
+	float* dL_dsh, // 输出 损失L对球谐函数系数sh的梯度 每16个1组 16个中的每1个是1个vec3
+	glm::vec3* dL_dscale, // 输出 损失L对缩放因子s的梯度
+	glm::vec4* dL_drot, // 输出 损失L对旋转四元数q的梯度 
 	float* dL_dopacity)
 {
 	auto idx = cg::this_grid().thread_rank();
