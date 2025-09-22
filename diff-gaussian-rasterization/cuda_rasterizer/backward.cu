@@ -472,12 +472,12 @@ renderCUDA(
 	const float* __restrict__ depths,
 	const float* __restrict__ final_Ts,
 	const uint32_t* __restrict__ n_contrib,
-	const float* __restrict__ dL_dpixels,
+	const float* __restrict__ dL_dpixels, // 输入 损失L对每个像素pixel每个RGB通道的梯度 
 	const float* __restrict__ dL_invdepths,
-	float3* __restrict__ dL_dmean2D,
-	float4* __restrict__ dL_dconic2D,
-	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dcolors,
+	float3* __restrict__ dL_dmean2D, // 输出 损失L对二维均值mean2D的梯度 
+	float4* __restrict__ dL_dconic2D, // 输出 损失L对二维协方差矩阵conic2D的梯度
+	float* __restrict__ dL_dopacity, // 输出 损失L对不透明度o的梯度
+	float* __restrict__ dL_dcolors, // 输出 损失L对颜色RGB的梯度 每3个1组 一个椭球的挨在一起
 	float* __restrict__ dL_dinvdepths
 )
 {
@@ -592,6 +592,9 @@ renderCUDA(
 			{
 				const float c = collected_colors[ch * BLOCK_SIZE + j];
 				// Update last color (to be used in the next iteration)
+				// 这句对应公式应该是 C_i = \alpha_{i-1} c_{i-1} + (1 - \alpha_{i-1}) C_{i-1}
+				// C_i是从0号椭球累积到i号椭球得到的颜色 
+				// \alpha_{i-1}是第i-1号椭球的alpha c_{i-1}是第i-1号椭球的颜色 
 				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
 				last_color[ch] = c;
 
